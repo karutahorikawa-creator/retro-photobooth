@@ -106,28 +106,68 @@ export function applyPixelFilter(imageData: ImageData, filter: FilterName): void
       break;
     }
 
-    // CSS equivalent: brightness(1.06) contrast(0.94) saturate(1.03)
+    // Soft v2: separable box blur (radius 3) blended 40/60 with original,
+    // then brightness(1.08) + contrast(0.91). No saturation adjustment.
+    // Smooths skin texture and small blemishes while retaining edges
+    // (eyes, hair, lips) because they carry high-contrast transitions
+    // that a 7-pixel blur at 40% opacity barely attenuates.
     case 'soft': {
+      const W = imageData.width;
+      const H = imageData.height;
+      const r = 3;      // blur radius → 7-pixel kernel
+      const kw = 7;     // 2*r + 1
+
+      // Snapshot of original pixels — read-only from here on
+      const orig = new Uint8ClampedArray(d);
+
+      // ── Horizontal box blur: orig → tmp ──────────────────────────────
+      const tmp = new Uint8ClampedArray(len);
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          const outIdx = (y * W + x) * 4;
+          for (let c = 0; c < 3; c++) {
+            let sum = 0;
+            for (let k = -r; k <= r; k++) {
+              // clamp-to-edge for border pixels
+              const sx = x + k < 0 ? 0 : x + k >= W ? W - 1 : x + k;
+              sum += orig[(y * W + sx) * 4 + c];
+            }
+            tmp[outIdx + c] = (sum / kw + 0.5) | 0; // round, not truncate
+          }
+          tmp[outIdx + 3] = orig[outIdx + 3]; // alpha unchanged
+        }
+      }
+
+      // ── Vertical box blur: tmp → smooth ──────────────────────────────
+      const smooth = new Uint8ClampedArray(len);
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          const outIdx = (y * W + x) * 4;
+          for (let c = 0; c < 3; c++) {
+            let sum = 0;
+            for (let k = -r; k <= r; k++) {
+              const sy = y + k < 0 ? 0 : y + k >= H ? H - 1 : y + k;
+              sum += tmp[(sy * W + x) * 4 + c];
+            }
+            smooth[outIdx + c] = (sum / kw + 0.5) | 0;
+          }
+          smooth[outIdx + 3] = orig[outIdx + 3];
+        }
+      }
+
+      // ── Blend + tonal adjustments ─────────────────────────────────────
       for (let i = 0; i < len; i += 4) {
-        let r = d[i], g = d[i + 1], b = d[i + 2];
-
-        // brightness(1.06)
-        r *= 1.06; g *= 1.06; b *= 1.06;
-
-        // contrast(0.94)
-        r = (r / 255 - 0.5) * 0.94 + 0.5; r *= 255;
-        g = (g / 255 - 0.5) * 0.94 + 0.5; g *= 255;
-        b = (b / 255 - 0.5) * 0.94 + 0.5; b *= 255;
-
-        // saturate(1.03)
-        const lumF = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        r = lumF + (r - lumF) * 1.03;
-        g = lumF + (g - lumF) * 1.03;
-        b = lumF + (b - lumF) * 1.03;
-
-        d[i]     = r < 0 ? 0 : r > 255 ? 255 : r;
-        d[i + 1] = g < 0 ? 0 : g > 255 ? 255 : g;
-        d[i + 2] = b < 0 ? 0 : b > 255 ? 255 : b;
+        for (let c = 0; c < 3; c++) {
+          // 60% original + 40% blurred (cover-crop analogy for texture)
+          let v = orig[i + c] * 0.6 + smooth[i + c] * 0.4;
+          // brightness(1.08)
+          v *= 1.08;
+          // contrast(0.91)
+          v = (v / 255 - 0.5) * 0.91 + 0.5;
+          v *= 255;
+          d[i + c] = v < 0 ? 0 : v > 255 ? 255 : v;
+        }
+        // d[i+3] (alpha) intentionally untouched
       }
       break;
     }

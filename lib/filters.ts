@@ -37,8 +37,8 @@ export const FILTERS: FilterDef[] = [
   {
     name: 'soft',
     label: 'Soft',
-    css: 'brightness(1.06) contrast(0.94) saturate(1.03)',
-    canvas: 'brightness(1.06) contrast(0.94) saturate(1.03)',
+    css: 'brightness(1.08) contrast(0.91)',
+    canvas: 'brightness(1.08) contrast(0.91)',
   },
 ];
 
