@@ -87,9 +87,13 @@ const CameraView = forwardRef<CameraHandle, Props>(({ filter, onReady, onError }
         return '';
       }
 
+      const videoW = video.videoWidth;
+      const videoH = video.videoHeight;
+
       console.log('[capture]', {
-        videoWidth: video.videoWidth,
-        videoHeight: video.videoHeight,
+        videoWidth: videoW,
+        videoHeight: videoH,
+        sourceRatio: videoW && videoH ? (videoW / videoH).toFixed(3) : 'n/a',
         readyState: video.readyState,
         paused: video.paused,
         ended: video.ended,
@@ -98,15 +102,34 @@ const CameraView = forwardRef<CameraHandle, Props>(({ filter, onReady, onError }
 
       if (
         video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
-        video.videoWidth === 0 ||
-        video.videoHeight === 0
+        videoW === 0 ||
+        videoH === 0
       ) {
         console.error('[capture] video not ready — skipping frame');
         return '';
       }
 
-      // Cap dimensions before pixel processing (avoids heavy loops on 4K camera feeds)
-      const [tw, th] = getCaptureDimensions(video.videoWidth, video.videoHeight);
+      // Center-crop the camera frame to the strip slot ratio (4:3 landscape)
+      // before scaling. This replicates the object-fit:cover crop that the live
+      // preview shows, and guarantees the captured image is always 4:3 so the
+      // strip compositor never stretches it into a different aspect ratio.
+      const TARGET_RATIO = 4 / 3;
+      const sourceRatio = videoW / videoH;
+
+      let sx = 0, sy = 0, sw = videoW, sh = videoH;
+      if (sourceRatio > TARGET_RATIO) {
+        // Camera is wider than 4:3 (e.g. 16:9): crop left and right equally
+        sw = Math.round(videoH * TARGET_RATIO);
+        sx = Math.round((videoW - sw) / 2);
+      } else if (sourceRatio < TARGET_RATIO) {
+        // Camera is taller than 4:3 (e.g. iPad portrait 3:4): crop top and bottom equally
+        sh = Math.round(videoW / TARGET_RATIO);
+        sy = Math.round((videoH - sh) / 2);
+      }
+
+      // Cap canvas dimensions for pixel-processing performance (900 px wide max).
+      // getCaptureDimensions now receives the 4:3-cropped size so returns 4:3 canvas dims.
+      const [tw, th] = getCaptureDimensions(sw, sh);
 
       const canvas = document.createElement('canvas');
       canvas.width = tw;
@@ -115,13 +138,14 @@ const CameraView = forwardRef<CameraHandle, Props>(({ filter, onReady, onError }
       const ctx = canvas.getContext('2d');
       if (!ctx) return '';
 
-      // Step 1: draw the frame mirrored (selfie orientation) at target size.
+      // Step 1: draw the frame mirrored (selfie orientation) at target size,
+      // using the 9-arg drawImage to apply the center crop in one pass.
       // We do NOT use ctx.filter here — Safari does not reliably apply
       // ctx.filter to drawImage(video) even in versions that expose the property.
       ctx.save();
       ctx.translate(tw, 0);
       ctx.scale(-1, 1);
-      ctx.drawImage(video, 0, 0, tw, th);
+      ctx.drawImage(video, sx, sy, sw, sh, 0, 0, tw, th);
       ctx.restore();
 
       // Step 2: bake the selected filter via pixel manipulation.
@@ -134,7 +158,7 @@ const CameraView = forwardRef<CameraHandle, Props>(({ filter, onReady, onError }
       }
 
       const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
-      console.log('[capture] filter:', filter, '| size:', tw, '×', th, '| dataUrl prefix:', dataUrl.slice(0, 60));
+      console.log('[capture] filter:', filter, '| canvas:', tw, '×', th, '| crop src:', sx, sy, sw, sh, '| dataUrl prefix:', dataUrl.slice(0, 60));
       return dataUrl;
     },
 
